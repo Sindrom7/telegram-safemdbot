@@ -8,7 +8,7 @@ from telegram.ext import (
     filters, CallbackContext
 )
 
-TOKEN = os.getenv("TOKEN")  # Trebuie setat în Render ca Environment Variable
+TOKEN = os.environ["TOKEN"]  # Trebuie setat în Render ca Environment Variable
 
 WARNS_FILE = "warns.json"
 
