@@ -1,18 +1,16 @@
-
-import json
 import os
+import json
 from datetime import datetime, timedelta
 from telegram import Update, ChatPermissions
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, ContextTypes,
-    filters, CallbackContext
+    Application, CommandHandler, MessageHandler, filters,
+    ContextTypes
 )
 
-TOKEN = os.environ["TOKEN"]  # Trebuie setat în Render ca Environment Variable
-
+TOKEN = os.getenv("TOKEN")  # Setează în Render ca Environment Variable
 WARNS_FILE = "warns.json"
 
-# ====== UTILITARE ======
+# ====== UTILITARE =====
 
 def load_warns():
     if not os.path.exists(WARNS_FILE):
@@ -32,100 +30,66 @@ def cleanup_warns(warns):
             del warns[user_id]
     return warns
 
-# ====== COMENZI ======
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Botul este activ și gata de acțiune!")
-
-async def reguli(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = """
-📜 *Regulament General*:
-
-1. Fără limbaj vulgar – se poate sancționa cu *mute pe termen nedeterminat*.
-2. Sistem de avertismente (*warn*): 3/3 = *ban automat*. Fiecare warn expiră în 30 de zile.
-3. Este *interzisă reclama* la alte grupuri, documente false, droguri, pariuri etc.
-4. Respectați ceilalți membri. Grupul este pentru ajutor și colaborare.
-5. Nu oferiți informații personale necunoscuților. Fiți vigilenți în discuții.
-
-Pentru orice problemă, contactați un admin.
-"""
-    await update.message.reply_markdown(text)
+# ====== COMENZI =====
 
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
-        return await update.message.reply_text("Folosește comanda ca reply la mesaj.")
-
-    if not await is_admin(update):
+        await update.message.reply_text("Dă reply la un mesaj ca să avertizezi.")
         return
 
-    user = update.message.reply_to_message.from_user
-    motive = " ".join(context.args) or "Fără motiv"
+    reason = " ".join(context.args) if context.args else "Fără motiv"
     warns = load_warns()
+    user_id = str(update.message.reply_to_message.from_user.id)
 
-    user_id = str(user.id)
-    warns.setdefault(user_id, [])
-    warns[user_id].append({"date": datetime.utcnow().isoformat(), "reason": motive})
+    warns.setdefault(user_id, []).append({
+        "reason": reason,
+        "date": datetime.utcnow().isoformat()
+    })
 
     warns = cleanup_warns(warns)
     save_warns(warns)
 
-    if len(warns[user_id]) >= 3:
-        await update.effective_chat.ban_member(user.id)
-        await update.message.reply_text(f"{user.mention_html()} a fost banat pentru acumularea a 3/3 warnuri.", parse_mode="HTML")
-        del warns[user_id]
-        save_warns(warns)
-    else:
-        await update.message.reply_text(f"{user.mention_html()} a primit warn pentru: *{motive}*. ({len(warns[user_id])}/3)", parse_mode="HTML")
+    count = len(warns[user_id])
+    await update.message.reply_text(f"🚨 Avertisment pentru {update.message.reply_to_message.from_user.first_name}.\nMotiv: {reason}\nTotal: {count}/3")
+
+    if count >= 3:
+        await update.message.chat.ban_member(user_id)
+        await update.message.reply_text(f"{update.message.reply_to_message.from_user.first_name} a fost banat pentru 3 avertismente.")
 
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("Folosește comanda ca reply la mesaj.")
-
-    if not await is_admin(update):
+    if not update.message.reply_to_message or len(context.args) < 1:
+        await update.message.reply_text("Folosire: /mute <minute> <motiv> (cu reply)")
         return
-
-    user = update.message.reply_to_message.from_user
-    if len(context.args) < 1:
-        return await update.message.reply_text("Folosește: /mute minute motiv")
 
     try:
         minutes = int(context.args[0])
     except ValueError:
-        return await update.message.reply_text("Primul argument trebuie să fie un număr (minute).")
+        await update.message.reply_text("Timp invalid.")
+        return
 
-    motive = " ".join(context.args[1:]) or "Fără motiv"
-    until = datetime.utcnow() + timedelta(minutes=minutes)
-    await context.bot.restrict_chat_member(
-        update.effective_chat.id,
-        user.id,
-        ChatPermissions(can_send_messages=False),
-        until_date=until
+    until_date = datetime.utcnow() + timedelta(minutes=minutes)
+    await update.message.chat.restrict_member(
+        user_id=update.message.reply_to_message.from_user.id,
+        permissions=ChatPermissions(can_send_messages=False),
+        until_date=until_date
     )
-    await update.message.reply_text(f"{user.mention_html()} a primit mute pentru {minutes} minute. Motiv: {motive}", parse_mode="HTML")
+    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "Fără motiv"
+    await update.message.reply_text(f"{update.message.reply_to_message.from_user.first_name} a fost mutat pentru {minutes} minute.\nMotiv: {reason}")
 
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
-        return await update.message.reply_text("Folosește comanda ca reply la mesaj.")
-
-    if not await is_admin(update):
+        await update.message.reply_text("Dă reply la un mesaj ca să banezi.")
         return
+    await update.message.chat.ban_member(update.message.reply_to_message.from_user.id)
+    await update.message.reply_text("Utilizator banat.")
 
-    user = update.message.reply_to_message.from_user
-    motive = " ".join(context.args) or "Fără motiv"
-    await update.effective_chat.ban_member(user.id)
-    await update.message.reply_text(f"{user.mention_html()} a fost banat. Motiv: {motive}", parse_mode="HTML")
-
-async def is_admin(update: Update) -> bool:
-    member = await update.effective_chat.get_member(update.effective_user.id)
-    return member.status in ("administrator", "creator")
-
-# ====== MAIN APP ======
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("✅ Bot activ și funcțional!")
 
 def main():
     application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("reguli", reguli))
     application.add_handler(CommandHandler("warn", warn))
     application.add_handler(CommandHandler("mute", mute))
     application.add_handler(CommandHandler("ban", ban))
